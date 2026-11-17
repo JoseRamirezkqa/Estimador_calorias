@@ -1,237 +1,170 @@
-﻿# 🍽️ Estimación de calorías y macronutrientes a partir de fotos de comida
+<div align="center">
 
-Proyecto IA2 · Universidad Industrial de Santander (UIS) · Ingeniería de Sistemas
+# 🍽️ Estimador de Calorías por IA
 
-Sistema de visión por computador que, a partir de **una foto de un plato**, identifica cada alimento, estima su cantidad en gramos y calcula calorías y macronutrientes (proteína, grasa, carbohidratos). El objetivo es cubrir la mayor variedad posible de alimentos, incluida comida casera colombiana (arroz, lentejas, etc.), usando modelos preentrenados con *fine-tuning*.
+**De una foto de comida a calorías y macronutrientes: segmentación + clasificación + profundidad + estimación nutricional.**
 
-> **Estado:** en desarrollo. Resultados preliminares presentados el 3 de noviembre de 2026.
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?logo=pytorch&logoColor=white)
+![HuggingFace](https://img.shields.io/badge/🤗-Transformers-FFD21E)
+![Jupyter](https://img.shields.io/badge/Jupyter-Notebooks-F37626?logo=jupyter&logoColor=white)
+![Universidad](https://img.shields.io/badge/UIS-Inteligencia%20Artificial-4c8c2b)
 
----
-
-## 📌 Tabla de contenidos
-
-1. [Idea general](#-idea-general)
-2. [Arquitectura del pipeline](#-arquitectura-del-pipeline)
-3. [Datasets](#-datasets)
-4. [Resultados preliminares](#-resultados-preliminares)
-5. [Estructura del repositorio](#-estructura-del-repositorio)
-6. [Instalación](#-instalación)
-7. [Uso](#-uso)
-8. [Autoetiquetado de Nutrition5k](#-autoetiquetado-de-nutrition5k)
-9. [Hoja de ruta](#-hoja-de-ruta)
-10. [Equipo](#-equipo)
-11. [Referencias y agradecimientos](#-referencias-y-agradecimientos)
+</div>
 
 ---
 
-## 💡 Idea general
+## 📌 Descripción
 
-Contar calorías a mano es tedioso e impreciso. Este proyecto propone un flujo en el que el usuario solo toma una foto y el sistema entrega la información nutricional de cada alimento del plato. El problema se divide en tres partes:
+Proyecto de **Inteligencia Artificial** (Universidad Industrial de Santander) que estima el contenido nutricional de un plato a partir de **una sola imagen**, con énfasis en que el sistema reconozca la **mayor variedad posible de alimentos**, incluida comida casera (arroz, lentejas, etc.), y no solo calorías sino también **proteína, grasa y demás macronutrientes**.
 
-- **¿Qué hay en el plato y dónde?** → segmentación + clasificación por región.
-- **¿Cuánto hay?** → estimación de profundidad / volumen / masa.
-- **¿Qué aporta nutricionalmente?** → cabeza de nutrición y tabla de valores por alimento.
+El sistema separa el problema en etapas, cada una con un modelo preentrenado adaptado al dominio:
 
-La escala de la imagen se aproxima pidiendo al usuario que tome la foto a una distancia guiada por un contorno de plato dibujado sobre la cámara.
+1. **Segmentar** cada alimento del plato.
+2. **Clasificar** qué alimento es cada región (el punto más difícil: arroz y lentejas no pesan lo mismo nutricionalmente).
+3. **Estimar la profundidad** para pasar de píxeles a volumen/masa.
+4. **Calcular gramos y nutrientes** con una cabeza nutricional y una tabla de valores por alimento.
 
-## 🧩 Arquitectura del pipeline
+---
 
-```
-                ┌──────────────────────────┐
-   Foto  ─────▶ │ Segmentador (SegFormer-B1)│──▶ máscaras / regiones por alimento
-                └──────────────────────────┘                │
-                                                            ▼
-                                          ┌─────────────────────────────┐
-                                          │ Clasificador por región     │
-                                          │ (CLIP-L/14 + capa lineal)   │──▶ P[r]: clase de cada región
-                                          └─────────────────────────────┘                │
-                ┌──────────────────────────┐                                              │
-   Foto  ─────▶ │ Profundidad (DPT-Hybrid) │──▶ mapa de profundidad ──────────────────────┤
-                └──────────────────────────┘                                              ▼
-                                                                         ┌───────────────────────────────┐
-                                                                         │ Cabeza de nutrición (MLP)     │
-                                                                         │ gramos + calorías + macros    │
-                                                                         └───────────────────────────────┘
+## 🧠 Arquitectura
+
+```mermaid
+flowchart LR
+    IMG[📷 Foto del plato] --> SEG[SegFormer-B1<br/>FoodSeg103]
+    SEG --> REG[Regiones por alimento]
+    REG --> CLS[Cabeza lineal sobre CLIP-L/14<br/>clasificación por región]
+    IMG --> DEP[Depth Anything V2 Metric<br/>afinado en Nutrition5k]
+    REG --> NUT
+    CLS --> NUT[Cabeza nutricional<br/>densidad = tabla real × ajuste aprendido]
+    DEP --> NUT
+    NUT --> OUT[🥗 Gramos · kcal · proteína · grasa · carbohidratos]
 ```
 
-| Etapa | Modelo | Entrada | Salida |
-|---|---|---|---|
-| Segmentación | SegFormer-B1 (*fine-tuned* en FoodSeg103) | Imagen RGB | Máscara de clases y feature map de 256 canales del decoder |
-| Clasificación por región | Cabeza sobre features enmascarados (MLP) y variante CLIP-L/14 + capa lineal | Regiones (componentes conectados de la clase predicha) | Clase corregida por región |
-| Profundidad | DPT-Hybrid (*fine-tuned* en Nutrition5k) | Imagen RGB | Mapa de profundidad |
-| Nutrición | Cabeza (MLP) | Imagen + máscaras + profundidad + clase por región | Masa (g), calorías y macronutrientes |
-
-**Por qué una cabeza de clasificación aparte:** el segmentador acierta bien el contorno (IoU de primer plano ≈ 0.93) pero confunde clases con nutrición muy distinta (p. ej. arroz vs. lentejas). Por eso la clase de cada región se reevalúa con una cabeza dedicada, entrenada sobre el segmentador congelado.
-
-## 📚 Datasets
-
-| Dataset | Uso | Notas |
+| Etapa | Modelo | Datos |
 |---|---|---|
-| [FoodSeg103](https://huggingface.co/datasets/EduardoPacheco/FoodSeg103) | Entrenamiento del segmentador y de la cabeza de clasificación | 103 clases; formato Arrow (Hugging Face) |
-| [Nutrition5k](https://github.com/google-research-datasets/nutrition5k) | Profundidad y nutrición; fuente de variedad adicional | Se usa solo `realsense_overhead` + `metadata`; no trae segmentación, por eso se autoetiqueta |
+| Segmentación | SegFormer-B1 (preentrenado en FoodSeg103, sin fine-tuning adicional) | FoodSeg103 |
+| Clasificación por región | Cabeza lineal sobre CLIP-L/14, inicializada con el texto de las clases (regularización L2-SP, pesos de clase, 3 semillas) | Nutrition5k autoetiquetado |
+| Profundidad | Depth Anything V2 Metric (afinado en Nutrition5k) | Nutrition5k (`realsense_overhead`) |
+| Nutrición | Cabeza que combina máscara + profundidad + clase | Nutrition5k (metadata) |
 
-Estructura esperada de Nutrition5k en local:
-
-```
-nutrition5k/
-├── metadata/
-│   ├── dish_metadata_cafe1.csv
-│   ├── dish_metadata_cafe2.csv
-│   └── ingredients_metadata.csv
-└── realsense_overhead/
-    └── dish_<id>/
-        ├── rgb.png
-        ├── depth_color.png
-        └── depth_raw.png
-```
-
-> Los datasets **no** se incluyen en el repositorio por su tamaño. Descárgalos desde las fuentes originales (ver [Instalación](#-instalación)).
-
-## 📊 Resultados preliminares
-
-**Segmentación en FoodSeg103** (validación, 15 épocas)
-
-| Modelo | mIoU | IoU primer plano (comida vs. fondo) |
-|---|---|---|
-| SegFormer-B0 | ≈ 0.21 | — |
-| SegFormer-B1 | ≈ 0.27 | ≈ 0.925 |
-
-**Cabeza de clasificación por región** (sobre SegFormer-B1 congelado)
-
-| Métrica | Baseline (voto de B1) | Con cabeza |
-|---|---|---|
-| Accuracy (regiones ground truth) | 0.611 | 0.641 |
-| Recall medio por clase | 0.348 | 0.486 |
-| mIoU con regiones predichas | 0.2653 | 0.3209 |
-
-**Estimación nutricional en Nutrition5k** (%MAE medio, menor es mejor)
-
-| Configuración | %MAE |
-|---|---|
-| Cabeza con profundidad (DPT-Hybrid) | 37.8 |
-| Cabeza sin profundidad | 38.3 |
-| Regresión Ridge | 54.4 |
-| Predecir la media | 73.0 |
-
-Con validación cruzada de 5 pliegues (cabeza v2): ≈ 35.6 con profundidad *ground truth*, ≈ 38.4 con DPT y ≈ 38.1 sin profundidad.
-
-> Son resultados preliminares; las cifras pueden cambiar a medida que se integre el autoetiquetado y el nuevo clasificador con CLIP.
-
-## 🗂️ Estructura del repositorio
-
-> Ajusta esta sección a la organización real del repo.
-
-```
-.
-├── README.md
-├── requirements.txt
-├── notebooks/
-│   ├── segmentacion_foodseg103.ipynb          # Entrenamiento SegFormer B0/B1
-│   ├── cabeza_clasificacion.ipynb             # Cabeza de clasificación por región
-│   ├── autoetiquetado_nutrition5k.ipynb       # SAM2 + SegFormer + CLIP
-│   ├── Nutrition5k_depth_finetuning_PC.ipynb  # Profundidad (DPT-Hybrid)
-│   └── Pipeline_cabeza_nutricion_clip.ipynb   # Pipeline completo con cabeza CLIP
-├── models/                                    # Checkpoints (no versionados)
-│   ├── mit-b1/                                # config.json + model.safetensors
-│   └── cabeza_clip_lineal.pt
-├── data/                                      # Datasets (no versionados)
-└── docs/                                      # Diapositivas, figuras y notas
-```
-
-## ⚙️ Instalación
-
-**Requisitos**
-
-- Python 3.10+
-- GPU NVIDIA con CUDA (desarrollado sobre una RTX 5060, arquitectura `sm_120`, con PyTorch 2.11.0 + cu128)
-
-```bash
-# 1. Clonar el repositorio
-git clone <URL_DEL_REPOSITORIO>
-cd <NOMBRE_DEL_REPOSITORIO>
-
-# 2. Crear el entorno
-python -m venv .venv
-source .venv/bin/activate        # En Windows: .venv\Scripts\activate
-
-# 3. Instalar PyTorch con CUDA 12.8
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-
-# 4. Instalar el resto de dependencias
-pip install -r requirements.txt
-```
-
-Dependencias principales: `transformers`, `datasets`, `ultralytics`, `segment-anything-2` (SAM2), `open_clip_torch` / `clip`, `scikit-learn`, `numpy`, `pandas`, `matplotlib`, `jupyter`.
-
-**Datos**
-
-1. Descargar FoodSeg103 (formato Arrow) desde Hugging Face y dejarlo en `data/foodseg103/`.
-2. Descargar Nutrition5k (solo `realsense_overhead` y `metadata`) y dejarlo en `data/nutrition5k/`.
-
-## ▶️ Uso
-
-Los experimentos se ejecutan desde notebooks, en este orden recomendado:
-
-1. **Segmentación:** entrenar SegFormer-B1 sobre FoodSeg103 (`segmentacion_foodseg103.ipynb`).
-2. **Cabeza de clasificación:** entrenar la cabeza sobre el segmentador congelado (`cabeza_clasificacion.ipynb`).
-3. **Profundidad:** *fine-tuning* de DPT-Hybrid sobre Nutrition5k (`Nutrition5k_depth_finetuning_PC.ipynb`).
-4. **Pipeline completo:** ejecutar `Pipeline_cabeza_nutricion_clip.ipynb` para unir segmentación, clasificación con CLIP, profundidad y cabeza de nutrición.
-
-Ejemplo de inferencia sobre una imagen (esquema):
-
-```python
-# Pseudocódigo del flujo; ver el notebook del pipeline para el código real
-regiones = segmentar(imagen)                 # SegFormer-B1 → componentes conectados
-clases   = clasificar_regiones(imagen, regiones)   # CLIP-L/14 + capa lineal
-prof     = estimar_profundidad(imagen)       # DPT-Hybrid
-resultado = cabeza_nutricion(imagen, regiones, clases, prof)
-print(resultado)  # gramos, kcal, proteína, grasa, carbohidratos por alimento
-```
+---
 
 ## 🏷️ Autoetiquetado de Nutrition5k
 
-Nutrition5k no incluye máscaras de segmentación, así que se generan automáticamente en lugar de etiquetar a mano:
+Nutrition5k no trae segmentación, así que las etiquetas se generan **automáticamente** (sin anotar a mano):
 
-1. **SAM2** (modo automático, filtros aflojados) genera máscaras candidatas.
-2. La **máscara de primer plano de SegFormer-B1** filtra las que corresponden a comida.
-3. La comida no cubierta (p. ej. arroz o ensalada, que SAM2 segmenta mal) se parte por clase de B1 y se reclasifica con **CLIP restringido a los ingredientes del plato** (tomados de la metadata), con opciones de rechazo.
-4. Etiquetas resultantes: `0` = fondo, `1..K` = clase, `255` = ignorar (comida dudosa).
+1. **SegFormer-B1** da la máscara de primer plano (comida vs. fondo).
+2. **SAM 2** propone máscaras pixel a pixel.
+3. **CLIP** clasifica cada región *restringido a los ingredientes del plato* (tomados de la metadata), con opciones de rechazo.
+4. Cada región se filtra por confianza y área; la comida dudosa se marca como `255` (ignorar).
 
-En un piloto de 96 platos el proceso tardó ≈ 2.7 s por plato. Las clases grandes (arroz, ensalada, pizza, carne, papas) salen bien; las regiones pequeñas y las verduras asadas son el punto débil. Se recomienda **no correr etiquetado y entrenamiento a la vez en la misma GPU**.
+Esquema de etiquetas: `0` = fondo · `1..K` = clase · `255` = ignorar.
 
-## 🛣️ Hoja de ruta
+---
 
-- [x] Segmentador SegFormer-B0/B1 sobre FoodSeg103
-- [x] Cabeza de clasificación por región
-- [x] Pipeline de autoetiquetado (piloto)
-- [x] *Fine-tuning* de profundidad (DPT-Hybrid)
-- [x] Cabeza de nutrición con profundidad y segmentación
-- [x] Integración de la cabeza de clasificación con CLIP en el pipeline completo
-- [ ] Autoetiquetado masivo y set de validación limpio (30–50 imágenes corregidas)
-- [ ] *Fine-tuning* de segmentación y clasificación con Nutrition5k etiquetado (mezclado con FoodSeg103)
-- [ ] Tabla de cobertura entre el menú objetivo (comida colombiana) y las clases disponibles
-- [ ] Base de datos propia de valores nutricionales por porción
-- [ ] Demo con guía de cámara (contorno de plato) para controlar la escala
+## 📊 Resultados
+
+Evaluación sobre un **set limpio de 40 platos anotados a mano** (183 regiones), con `tau = 0.3`:
+
+| Clasificador | mIoU (regiones predichas por B1) | acc_px (regiones de referencia) |
+|---|:---:|:---:|
+| CLIP zero-shot | 0.383 | 0.666 |
+| Cabeza lineal — Dataset A (mínimo) | **0.609** | 0.879 |
+| Cabeza lineal — Dataset B (estricto) | 0.602 | **0.881** |
+
+> A vs. B no muestran diferencia significativa (bootstrap, IC95 contiene 0).
+
+**Segmentación en FoodSeg103** (mIoU en validación): B0 0.21 → B1 0.27; con la cabeza de clasificación sobre regiones predichas: 0.266 → **0.385**.
+
+**Estimación nutricional:** _(completar con el %MAE final del `Pipeline_final_nutricion.ipynb`)_
+
+---
+
+## 📁 Estructura del repositorio
+
+```
+.
+├── foodseg103_segmentacion_clasificacion_final.ipynb   # SegFormer-B1 + cabeza de clasificación en FoodSeg103
+├── Nutrition5k_autoetiquetado_v2_final.ipynb           # Autoetiquetado v2 (B1 + SAM2 + CLIP)
+├── Nutrition5k_etiqueted.ipynb                         # Exploración / revisión de etiquetas
+├── Nutrition5k_finetuning_cabeza_clip.ipynb            # Fine-tuning de la cabeza CLIP (datasets A y B)
+├── Cabeza_final_nutricion.ipynb                        # Cabeza nutricional (máscara + profundidad + clase)
+├── Pipeline_cabeza_nutricion_clip.ipynb                # Pipeline con cabeza CLIP (versión intermedia)
+├── Pipeline_completo_nutricion.ipynb                   # Pipeline completo (versión intermedia)
+├── Pipeline_final_nutricion.ipynb                      # ⭐ Pipeline final de punta a punta
+├── cabeza_clip_{A,B}_s{0,1,2}.pt                       # Pesos de las cabezas CLIP (dataset × semilla)
+├── clean_set/ · clean_refs/                            # Set limpio de 40 platos anotados a mano
+└── README.md
+```
+
+> Las carpetas de datos, cachés, etiquetas masivas y `sam2.1_b.pt` **no** se versionan (ver `.gitignore`).
+
+---
+
+## 🚀 Cómo reproducirlo
+
+### 1. Entorno
+
+```bash
+conda create -n autolabel python=3.10 -y
+conda activate autolabel
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install transformers datasets ultralytics open_clip_torch scikit-learn pandas matplotlib jupyter
+```
+
+> Probado con PyTorch 2.x + CUDA 12.8 en una **RTX 5060 (sm_120)**.
+
+### 2. Datos
+
+- **FoodSeg103** — formato Arrow, vía Hugging Face.
+- **Nutrition5k** — solo `realsense_overhead/` y `metadata/` (`dish_metadata_cafe1.csv`, `dish_metadata_cafe2.csv`, `ingredients_metadata.csv`).
+
+Ajusta las rutas al inicio de cada notebook según dónde los descargues.
+
+### 3. Pesos
+
+- **SegFormer-B1** entrenado en FoodSeg103 → guárdalo en la ruta que indica el notebook.
+- **SAM 2.1 (`sam2.1_b.pt`)** → se descarga automáticamente con `ultralytics` o desde su repositorio oficial.
+
+### 4. Orden sugerido de notebooks
+
+1. `foodseg103_segmentacion_clasificacion_final.ipynb`
+2. `Nutrition5k_autoetiquetado_v2_final.ipynb`
+3. `Nutrition5k_finetuning_cabeza_clip.ipynb`
+4. `Cabeza_final_nutricion.ipynb`
+5. `Pipeline_final_nutricion.ipynb`
+
+---
+
+## 🧭 Limitaciones y trabajo futuro
+
+- Clases con IoU ≈ 0 en el set limpio: *sweet potato, pork, fish, tofu* (familias visualmente parecidas).
+- Los errores del autoetiquetado se concentran en regiones pequeñas y alimentos similares (carnes, camote/papas asadas, calabazas).
+- Desbalance de clases y cobertura de arroz pendientes de diagnóstico.
+- Ampliar la variedad de comida colombiana/casera.
+
+---
+
+## 📚 Referencias
+
+- Thames et al., *Nutrition5k: Towards Automatic Nutritional Understanding of Generic Food*, CVPR 2021.
+- Wu et al., *A Large-Scale Benchmark for Food Image Segmentation (FoodSeg103)*, ACM MM 2021.
+- Xie et al., *SegFormer: Simple and Efficient Design for Semantic Segmentation with Transformers*, NeurIPS 2021.
+- Ravi et al., *SAM 2: Segment Anything in Images and Videos*, 2024.
+- Radford et al., *Learning Transferable Visual Models From Natural Language Supervision (CLIP)*, ICML 2021.
+- Yang et al., *Depth Anything V2*, NeurIPS 2024.
+
+---
 
 ## 👥 Equipo
 
-| Integrante | Rol |
-|---|---|
-| Jose David | Segmentador, clasificación por región, autoetiquetado |
-| María José | Integración de los modelos (profundidad + segmentación) |
-| Miguel Pardo | Modelo de profundidad (Nutrition5k) |
+- _Jose David Ramirez Cacua_ — [@usuario](https://github.com/JoseRamirezkqa)
+- _María José Correa Ariza_ — [@usuario](https://github.com/MariaJCorrea)
+- _Miguel Pardo_ — 
 
-**Profesor:** _[Nombre del profesor]_ · **Curso:** Proyecto IA2, Universidad Industrial de Santander.
+Universidad Industrial de Santander · Ingeniería de Sistemas · Inteligencia Artificial
 
-## 📖 Referencias y agradecimientos
+## 📄 Licencia
 
-- Xie et al., *SegFormer: Simple and Efficient Design for Semantic Segmentation with Transformers* (2021).
-- Wu et al., *A Large-Scale Benchmark for Food Image Segmentation (FoodSeg103)* (2021).
-- Thames et al., *Nutrition5k: Towards Automatic Nutritional Understanding of Generic Food* (2021).
-- Ranftl et al., *Vision Transformers for Dense Prediction (DPT)* (2021).
-- Ravi et al., *SAM 2: Segment Anything in Images and Videos* (2024).
-- Radford et al., *Learning Transferable Visual Models From Natural Language Supervision (CLIP)* (2021).
-- Cheng et al., *YOLO-World: Real-Time Open-Vocabulary Object Detection* (2024).
-
-Gracias al profesor por permitir el uso de modelos preentrenados y por la guía durante el desarrollo.
-
+_Define aquí la licencia (por ejemplo MIT). Ten en cuenta las licencias de los datasets y modelos usados._

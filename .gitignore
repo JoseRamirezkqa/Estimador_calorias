@@ -1,0 +1,85 @@
+# ============================================================
+#  Estimador de calorías por IA — .gitignore
+# ============================================================
+
+# ---------- Datasets (se descargan aparte, ver README) ----------
+dataset_A_minimo/
+dataset_B_estricto/
+nutrition5k/
+foodseg103/
+data/
+*.arrow
+*.zip
+*.tar
+*.tar.gz
+
+# ---------- Etiquetas automáticas masivas (se regeneran con el notebook) ----------
+raw_labels*/
+*.npz
+
+# ---------- Cachés intermedias (features, embeddings, pipeline) ----------
+cache_ft/
+head_cache/
+pipeline_cache/
+*_cache/
+cache_*/
+
+# ---------- Pesos y checkpoints ----------
+# Se ignoran TODOS los .pt (incluye sam2.1_b.pt, ~160 MB: supera el límite de 100 MB de GitHub)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+# ...excepto las cabezas lineales de CLIP (pesan muy poco y son el resultado final)
+!cabeza_clip_*.pt
+
+# Modelos descargados de Hugging Face / Ultralytics
+mit-b*/
+foodseg_segformer/
+runs/
+weights/
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# ---------- Entornos virtuales ----------
+.venv/
+venv/
+env/
+autolabel/
+.conda/
+
+# ---------- Secretos ----------
+.env
+*.key
+secrets.json
+kaggle.json
+
+# ---------- Logs y experimentos ----------
+*.log
+wandb/
+lightning_logs/
+tensorboard/
+
+# ---------- Editor / Sistema operativo ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Opcional: descomenta si pesan mucho ----------
+clean_set/
+clean_refs/
